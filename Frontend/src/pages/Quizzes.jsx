@@ -146,7 +146,15 @@ const Quizzes = () => {
       }
     } catch (err) {
       console.error("Quiz generation error:", err);
-      setError("Failed to contact quiz service.");
+      console.error("Error response:", err.response?.data);
+      
+      // Show the actual error message from the server if available
+      const errorMessage = err.response?.data?.error || 
+                          err.response?.data?.details || 
+                          err.message || 
+                          "Failed to contact quiz service.";
+      
+      setError(errorMessage);
     }
     setLoading(false);
   };
