@@ -19,28 +19,39 @@ const getAvailableModel = async () => {
       "No API key found. Please set GEMINI_API_KEY or GOOGLE_AI_API_KEY in your environment variables."
     );
   }
+  
+  // Use the most reliable models first (without testing each one)
   const models = [
+    "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-1.5-pro",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
     "gemini-pro",
-    "gemini-1.0-pro",
   ];
 
-  for (const modelName of models) {
-    try {
-      const genAI = getGenAI();
-      const model = genAI.getGenerativeModel({ model: modelName });
-      // Test the model with a simple prompt
-      const result = await model.generateContent("Hello");
-      await result.response;
-      console.log(`Using model: ${modelName}`);
-      return model;
-    } catch (error) {
-      console.log(`Model ${modelName} not available:`, error.message);
-      continue;
+  const genAI = getGenAI();
+  
+  // Simply return the first model - let it fail during actual use if there's an issue
+  // This avoids unnecessary initialization errors
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    console.log(`Using model: gemini-2.5-flash`);
+    return model;
+  } catch (error) {
+    console.error("Model initialization error:", error);
+    // Try fallback models
+    for (const modelName of ["gemini-2.0-flash", "gemini-pro"]) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        console.log(`Using fallback model: ${modelName}`);
+        return model;
+      } catch (fallbackError) {
+        console.log(`Fallback model ${modelName} failed:`, fallbackError.message);
+        continue;
+      }
     }
+    throw new Error(`Model initialization failed: ${error.message}`);
   }
-  throw new Error("No available models found");
 };
 
 // Function to check API usage
@@ -140,14 +151,29 @@ const generateAssistantResponse = async (userMessage) => {
 };
 
 exports.generateQuiz = async (req, res) => {
+  console.log("📝 Quiz generation request received");
   console.log("Request body:", req.body);
+  console.log("User:", req.user ? req.user.email : "Unknown");
+  
   const { topic, level, count = 5 } = req.body;
   if (!topic || !level) {
     return res.status(400).json({ error: "Topic and level are required." });
   }
 
   try {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
+    console.log(`🔑 API Key check: ${apiKey ? 'SET (' + apiKey.substring(0, 15) + '...)' : 'NOT SET'}`);
+    
+    if (!apiKey) {
+      console.error("❌ API key is not set!");
+      return res.status(500).json({
+        error: "API key not configured",
+        details: "GEMINI_API_KEY or GOOGLE_AI_API_KEY environment variable is not set",
+      });
+    }
+    
     const model = await getAvailableModel();
+    console.log(`✅ Model initialized successfully`);
 
     const prompt = `Generate ${count} multiple-choice quiz questions on the topic of '${topic}' for a ${level} level student. Each question should have 4 options and indicate the correct answer. 
 
@@ -158,52 +184,124 @@ IMPORTANT:
 
 Format as JSON: [{"question": "question text", "options": ["option A text", "option B text", "option C text", "option D text"], "answer": "exact text of correct option"}]`;
 
+    console.log(`📤 Sending prompt to Gemini API (${count} questions on ${topic})...`);
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const text = response.text();
+    console.log(`📥 Received response (${text.length} characters)`);
+    console.log("Gemini response preview:", text.substring(0, 200) + "...");
 
-    console.log("Gemini response:", text);
+    // Clean the response - remove markdown code blocks if present
+    let cleanedText = text.trim();
+    
+    // Remove markdown code blocks (```json ... ```)
+    cleanedText = cleanedText.replace(/^```json\s*/i, '');
+    cleanedText = cleanedText.replace(/^```\s*/i, '');
+    cleanedText = cleanedText.replace(/\s*```$/i, '');
+    cleanedText = cleanedText.trim();
 
     // Try to parse the JSON from the response
     let quiz;
     try {
-      quiz = JSON.parse(text);
+      quiz = JSON.parse(cleanedText);
     } catch (e) {
       console.log(
         "Failed to parse JSON directly, trying to extract JSON from response"
       );
-      // fallback: try to extract JSON from the response
-      const match = text.match(/\[.*\]/s);
-      quiz = match ? JSON.parse(match[0]) : null;
+      console.log("Parse error:", e.message);
+      console.log("Cleaned text:", cleanedText.substring(0, 200));
+      
+      // fallback: try to extract JSON array from the response
+      const jsonMatch = cleanedText.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        try {
+          quiz = JSON.parse(jsonMatch[0]);
+        } catch (parseError) {
+          console.error("JSON extraction failed:", parseError.message);
+          quiz = null;
+        }
+      } else {
+        quiz = null;
+      }
     }
 
-    if (!quiz) {
-      return res
-        .status(500)
-        .json({ error: "Failed to parse quiz from AI response." });
+    if (!quiz || !Array.isArray(quiz) || quiz.length === 0) {
+      console.error("Failed to parse quiz. Response was:", cleanedText.substring(0, 500));
+      return res.status(500).json({ 
+        error: "Failed to parse quiz from AI response.",
+        details: "The AI response could not be parsed as valid JSON. Please try again.",
+        rawResponse: cleanedText.substring(0, 200) // Include first 200 chars for debugging
+      });
     }
 
+    console.log(`✅ Successfully generated ${quiz.length} quiz questions`);
     res.json({ quiz });
   } catch (error) {
     console.error("Gemini quiz generation error:", error);
+    console.error("Error details:", {
+      message: error.message,
+      status: error.status,
+      statusCode: error.statusCode,
+      stack: error.stack,
+    });
 
     // Provide more specific error messages
-    if (error.status === 404) {
+    if (error.status === 404 || error.statusCode === 404) {
       return res.status(500).json({
         error:
           "AI model not available. Please check your API key and model configuration.",
+        details: error.message,
       });
     }
 
-    if (error.message.includes("No available models found")) {
+    if (error.message && error.message.includes("No available models found")) {
       return res.status(500).json({
         error: "No compatible AI models available. Please check your API key.",
+        details: error.message,
       });
     }
 
-    res
-      .status(500)
-      .json({ error: "Failed to generate quiz. Please try again." });
+    if (error.message && error.message.includes("API_KEY_INVALID")) {
+      return res.status(500).json({
+        error: "Invalid API key. Please check your Gemini API key configuration.",
+        details: error.message,
+      });
+    }
+
+    if (error.message && (error.message.includes("429") || error.message.includes("quota"))) {
+      return res.status(500).json({
+        error: "API quota exceeded. Please check your API usage limits.",
+        details: error.message,
+      });
+    }
+
+    // Check for API key related errors
+    if (error.message && (
+      error.message.includes("API_KEY") || 
+      error.message.includes("API key") ||
+      error.message.includes("authentication") ||
+      error.message.includes("401") ||
+      error.message.includes("403")
+    )) {
+      return res.status(500).json({
+        error: "API key authentication failed. Please check your Gemini API key configuration.",
+        details: error.message,
+      });
+    }
+
+    // Log full error for debugging
+    console.error("Full error object:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    
+    res.status(500).json({ 
+      error: "Failed to generate quiz. Please try again.",
+      details: error.message || "Unknown error occurred",
+      errorType: error.constructor.name,
+      // Include more details in development
+      ...(process.env.NODE_ENV === "development" && {
+        stack: error.stack,
+        fullError: error.toString()
+      })
+    });
   }
 };
 

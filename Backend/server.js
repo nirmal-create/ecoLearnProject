@@ -1,5 +1,25 @@
 const dotenv = require("dotenv");
+const fs = require("fs");
+const path = require("path");
+
+// Load .env file first
 dotenv.config();
+
+// Load environment variables from env.atlas.test file (if it exists)
+const envAtlasPath = path.join(__dirname, "env.atlas.test");
+if (fs.existsSync(envAtlasPath)) {
+  const envContent = fs.readFileSync(envAtlasPath, "utf8");
+  envContent.split("\n").forEach((line) => {
+    if (line.includes("=") && !line.startsWith("#")) {
+      const [key, ...valueParts] = line.split("=");
+      const value = valueParts.join("=").trim();
+      if (key && value) {
+        process.env[key] = value;
+      }
+    }
+  });
+  console.log("✅ Environment variables loaded from env.atlas.test");
+}
 
 // Set default environment variables if not provided
 if (!process.env.JWT_SECRET) {
@@ -18,6 +38,12 @@ console.log(
   process.env.GOOGLE_AI_API_KEY ? "FOUND" : "NOT FOUND"
 );
 console.log("JWT_SECRET:", process.env.JWT_SECRET ? "SET" : "NOT SET");
+console.log(
+  "MONGODB_URI:",
+  process.env.MONGODB_URI
+    ? process.env.MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, "//***:***@")
+    : "NOT SET"
+);
 const express = require("express");
 const app = express();
 

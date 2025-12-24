@@ -49,4 +49,17 @@ router.get("/test", (req, res) => {
   });
 });
 
+// Diagnostic endpoint to check API key status (protected)
+router.get("/diagnostics", auth, (req, res) => {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
+  res.json({
+    success: true,
+    apiKeySet: !!apiKey,
+    apiKeyPrefix: apiKey ? apiKey.substring(0, 15) + "..." : "NOT SET",
+    environment: process.env.NODE_ENV || "development",
+    nodeVersion: process.version,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 module.exports = router;
